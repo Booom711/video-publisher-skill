@@ -515,7 +515,9 @@ async function mutateDouyin() {
   const before = await inspectDouyin();
   if (!before.gates.video.ok) return { ...before, blocker: typedBlocker('STATE_AMBIGUOUS', '抖音没有可修复的已上传视频') };
   const metadata=await ensureDouyinMetadata(before);
-  if(!metadata.ok)return {...(await inspectDouyin()),actions:metadata.actions,blocker:metadata.blocker};
+  // A missing sync control must remain blocked, but independent cover work can finish.
+  const settingsBlocked=!metadata.ok&&metadata.blocker?.code==='SELECTOR_DRIFT'&&metadata.actions?.settings?.ok===false;
+  if(!metadata.ok&&!settingsBlocked)return {...(await inspectDouyin()),actions:metadata.actions,blocker:metadata.blocker};
   const actions = metadata.actions;
 
   const receipts = {};
@@ -563,7 +565,7 @@ async function mutateDouyin() {
   }
   actions.receiptCheckpoint = checkpointReceipts(receipts);
   const after = await inspectDouyin();
-  return { ...after, actions, receipts };
+  return { ...after, actions, receipts, ...(settingsBlocked?{blocker:metadata.blocker}:{}) };
 }
 
 async function runPlatformPhase(){if(phase==='inspect'||phase==='verify')return await inspectDouyin();if(phase==='upload_start')return await startDouyinUpload();if(phase==='prefill')return await prefillDouyin();if(phase==='upload')return await uploadDouyin();if(phase==='mutate')return await mutateDouyin();return {...(await inspectDouyin()),blocker:typedBlocker('ACTION_FAILED',`unsupported Douyin phase: ${phase}`)}}
