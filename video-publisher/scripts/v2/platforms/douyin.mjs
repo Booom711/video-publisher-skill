@@ -7,6 +7,41 @@ const douyinCoverAssets = [
   { slot: 'landscape', ratio: '4:3', path: String(pkg.cover?.horizontal4x3Path || '') },
 ];
 
+function stripProvenDouyinDescriptionSuffix(value, expectedDescription, editorText) {
+  const raw = String(value || '').replace(/\u200b/g, '');
+  const expected = String(expectedDescription || '').replace(/\u200b/g, '');
+  const full = String(editorText || '').replace(/\u200b/g, '');
+  const compact = input => String(input || '').replace(/[\s\u00a0\u200b]+/g, '').toLowerCase();
+  if (!expected || !compact(full).startsWith(compact(expected))) {
+    return { value: raw, rawValue: raw, matchedDescriptionSuffix: '', descriptionPrefixProven: false };
+  }
+  const isSpace = char => /[\s\u00a0\u200b]/.test(char || '');
+  const prefixEnd = (actual, prefix) => {
+    let actualIndex = 0;
+    let prefixIndex = 0;
+    while (prefixIndex < prefix.length) {
+      while (prefixIndex < prefix.length && isSpace(prefix[prefixIndex])) prefixIndex += 1;
+      while (actualIndex < actual.length && isSpace(actual[actualIndex])) actualIndex += 1;
+      if (prefixIndex >= prefix.length) break;
+      if (actualIndex >= actual.length || actual[actualIndex].toLowerCase() !== prefix[prefixIndex].toLowerCase()) return -1;
+      actualIndex += 1;
+      prefixIndex += 1;
+    }
+    return actualIndex;
+  };
+  const lines = expected.split(/\r?\n/);
+  const candidates = [...new Set([expected, ...lines.map((_, index) => lines.slice(index).join('\n'))])]
+    .filter(candidate => compact(candidate))
+    .sort((left, right) => compact(right).length - compact(left).length);
+  for (const candidate of candidates) {
+    const end = prefixEnd(raw, candidate);
+    if (end >= 0) {
+      return { value: raw.slice(end), rawValue: raw, matchedDescriptionSuffix: candidate, descriptionPrefixProven: true };
+    }
+  }
+  return { value: raw, rawValue: raw, matchedDescriptionSuffix: '', descriptionPrefixProven: true };
+}
+
 async function inspectDouyin() {
   const state = await js(String.raw`((expectedTitle, expectedDescription, requestedTopics) => {
     const compact = value => String(value || '').replace(/\s+/g, ' ').trim()
@@ -64,9 +99,11 @@ async function inspectDouyin() {
     const syncRadios=[...document.querySelectorAll('label')].map(el=>({text:compact(el.innerText||el.textContent||''),input:el.querySelector('input.radio-native-p6VBGt,input[type="checkbox"]')})).filter(item=>/^(不同时发布|同时发布到)/.test(item.text))
     const noSyncChecked=Boolean(syncRadios.find(item=>item.text.startsWith('不同时发布'))?.input?.checked)
     const simultaneousChecked=Boolean(syncRadios.find(item=>item.text.startsWith('同时发布到'))?.input?.checked)
+    const visibleRadioLabels=[...document.querySelectorAll('label')].filter(visible).map(el=>compact(el.innerText||el.textContent||'')).filter(Boolean)
+    const settingsNotOffered=/发布设置/.test(text)&&syncRadios.length===0&&!sync&&!/今日头条|不同时发布|同时发布到|同步发布/.test(text)
     const topicControlReady=[...document.querySelectorAll('button,[role="button"],div,span')]
       .some(el=>visible(el)&&compact(el.innerText||el.textContent||'')==='#添加话题')
-    const earlyMutationReady=visible(titleInput)&&visible(editor)&&topicControlReady&&syncRadios.length>0&&(uploading||uploadSucceeded)
+    const earlyMutationReady=visible(titleInput)&&visible(editor)&&topicControlReady&&(syncRadios.length>0||settingsNotOffered)&&(uploading||uploadSucceeded)
     const coverUrls = {}
     for (const [slot,re] of [['landscape',/横封面\s*4\s*:\s*3|横封面4:3/],['portrait',/竖封面\s*3\s*:\s*4|竖封面3:4/]]) {
       const card=[...document.querySelectorAll('.coverControl-CjlzqC')].find(el=>re.test(compact(el.innerText||el.textContent||'')))
@@ -77,7 +114,7 @@ async function inspectDouyin() {
     const dialogs=[...document.querySelectorAll('[role="dialog"],.semi-modal,[class*="modal-mask"],[class*="dialog-mask"]')]
       .map(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {text:compact(el.innerText||el.textContent||'').slice(0,500),cls:String(el.className||''),w:r.width,h:r.height,display:s.display,visibility:s.visibility,opacity:s.opacity}})
       .filter(item=>item.w>20&&item.h>20&&item.display!=='none'&&item.visibility!=='hidden'&&!/animate-hide|leave-active/.test(item.cls))
-    return {text:text.slice(0,2800),title,editorText,prose,selected,plainResidue,duplicates,tokenCounts,uploadSucceeded,uploading,uploadFailed,loginRequired,resumeDialog,identityMatches,identityEmpty,knownMisroutedInput,syncOn,syncFound:Boolean(sync),noSyncChecked,simultaneousChecked,topicControlReady,earlyMutationReady,titleInputReady:visible(titleInput),editorReady:visible(editor),settingsReady:syncRadios.length>0,coverUrls,dialogs}
+    return {text:text.slice(0,2800),title,editorText,prose,descriptionMatches:prose===expectedProse,selected,plainResidue,duplicates,tokenCounts,uploadSucceeded,uploading,uploadFailed,loginRequired,resumeDialog,identityMatches,identityEmpty,knownMisroutedInput,syncOn,syncFound:Boolean(sync),noSyncChecked,simultaneousChecked,settingsNotOffered,visibleRadioLabels,topicControlReady,earlyMutationReady,titleInputReady:visible(titleInput),editorReady:visible(editor),settingsReady:syncRadios.length>0||settingsNotOffered,coverUrls,dialogs}
   })(${JSON.stringify(douyinTitle)}, ${JSON.stringify(douyinDescription)}, ${JSON.stringify(douyinTopics)})`);
   const buttons = await inspectFinalButtons(/^发布$/);
   const finalButton = buttons.find(button=>button.buttonish) || buttons[0] || null;
@@ -94,9 +131,9 @@ async function inspectDouyin() {
       draftIdentity: state.identityMatches ? okGate({empty:state.identityEmpty,title:state.title,recovery:state.knownMisroutedInput?'known_title_body_input_misroute':null}) : failedGate({foreign:true,title:state.title,editorText:state.editorText}),
       video: state.uploadSucceeded && !state.uploading && !state.uploadFailed ? okGate({stable:true}) : failedGate({uploaded:state.uploadSucceeded,uploading:state.uploading,failed:state.uploadFailed,resumeDialog:state.resumeDialog}),
       title: state.title===douyinTitle ? okGate({expected:douyinTitle,actual:state.title}) : failedGate({expected:douyinTitle,actual:state.title}),
-      description: state.prose===douyinDescription ? okGate({expected:douyinDescription,actual:state.prose}) : failedGate({expected:douyinDescription,actual:state.prose,editorText:state.editorText}),
+      description: state.descriptionMatches ? okGate({expected:douyinDescription,actual:state.prose}) : failedGate({expected:douyinDescription,actual:state.prose,editorText:state.editorText}),
       tags: state.selected.length===douyinTopics.length&&!state.plainResidue.length&&!state.duplicates.length ? okGate({requested:douyinTopics,selected:state.selected,tokenCounts:state.tokenCounts}) : failedGate({requested:douyinTopics,selected:state.selected,plainResidue:state.plainResidue,duplicates:state.duplicates,tokenCounts:state.tokenCounts,editorText:state.editorText}),
-      settings: state.noSyncChecked&&!state.syncOn&&!state.simultaneousChecked ? okGate({simultaneousPublish:false,toutiaoSync:false}) : failedGate({simultaneousPublish:state.simultaneousChecked,noSyncChecked:state.noSyncChecked,toutiaoSync:state.syncOn,syncFound:state.syncFound}),
+      settings: state.noSyncChecked&&!state.syncOn&&!state.simultaneousChecked ? okGate({simultaneousPublish:false,toutiaoSync:false,mode:'explicit_no_sync'}) : state.settingsNotOffered ? okGate({simultaneousPublish:false,toutiaoSync:false,mode:'not_offered',visibleRadioLabels:state.visibleRadioLabels}) : failedGate({simultaneousPublish:state.simultaneousChecked,noSyncChecked:state.noSyncChecked,toutiaoSync:state.syncOn,syncFound:state.syncFound}),
       cover: coverReceiptOk||defaultCoverOk ? okGate({custom:douyinCustomCover,urls:state.coverUrls,receipt}) : failedGate({custom:douyinCustomCover,urls:state.coverUrls,receipt,reason:douyinCustomCover&&!receipt?'custom cover receipt missing':'cover not verified'}),
       noBlockingDialog: state.dialogs.length===0 ? okGate({active:[]}) : failedGate({active:state.dialogs}),
       finalButton: finalButton&&!finalButton.disabled ? okGate(finalButton) : failedGate({buttons}),
@@ -306,10 +343,13 @@ async function inspectDouyinTrailingPlainText() {
     const editor=document.querySelector('#vp2-douyin-editor');if(!editor)return {ok:false,reason:'douyin editor missing during tail inspection'}
     const walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT);let node,lastPlain=null
     while((node=walker.nextNode())){if(!node.parentElement?.closest('[data-mention], [contenteditable="false"]')&&String(node.nodeValue||'').replace(/\u200b/g,'').length)lastPlain=node}
-    let value=String(lastPlain?.nodeValue||'').replace(/\u200b/g,'')
-    if(expectedDescription&&value.startsWith(expectedDescription))value=value.slice(expectedDescription.length)
+    const rawValue=String(lastPlain?.nodeValue||'').replace(/\u200b/g,'')
+    const editorText=String(editor.innerText||editor.textContent||'')
+    const stripDescription=${stripProvenDouyinDescriptionSuffix.toString()}
+    const stripped=stripDescription(rawValue,expectedDescription,editorText)
+    const value=stripped.value
     const entities=[...editor.querySelectorAll('[data-mention="#"], [data-mention="activity"]')].map(el=>String(el.innerText||el.textContent||'').replace(/[\s\u200b\u00a0]+/g,'').replace(/^#/,'').toLowerCase()).filter(Boolean)
-    return {ok:true,value,trimmed:value.trim(),entities,editorText:String(editor.innerText||editor.textContent||'')}
+    return {ok:true,value,trimmed:value.trim(),entities,editorText,...stripped}
   })(${JSON.stringify(douyinDescription)})`);
 }
 
@@ -427,6 +467,11 @@ async function recoverDouyinTopicPrefix(before) {
 }
 
 async function turnOffDouyinSync() {
+  const before=await inspectDouyin();
+  if(before.gates.settings.ok){
+    const mode=before.gates.settings.evidence?.mode||'explicit_no_sync';
+    return {ok:true,already:true,mode,evidence:before.gates.settings.evidence};
+  }
   const located=await js(String.raw`(() => {const c=v=>String(v||'').replace(/\s+/g,' ').trim();const label=[...document.querySelectorAll('label')].find(el=>c(el.innerText||el.textContent||'').startsWith('不同时发布'));if(!label)return {ok:false,reason:'douyin no-sync radio missing'};const input=label.querySelector('input');label.scrollIntoView({block:'center',inline:'center'});const r=label.getBoundingClientRect();return {ok:true,on:Boolean(input?.checked),point:{x:r.left+r.width/2,y:r.top+r.height/2}}})()`);
   if(!located.ok)return located;if(!located.on){await click([located.point.x,located.point.y],{label:'disable douyin simultaneous publish'}).catch(()=>{});await wait(1)}const after=await inspectDouyin();return after.gates.settings.ok?{ok:true,wasOn:!located.on}:{ok:false,reason:'douyin simultaneous publish remained enabled',evidence:after.gates.settings.evidence};
 }
@@ -514,12 +559,7 @@ async function prefillDouyin() {
 async function mutateDouyin() {
   const before = await inspectDouyin();
   if (!before.gates.video.ok) return { ...before, blocker: typedBlocker('STATE_AMBIGUOUS', '抖音没有可修复的已上传视频') };
-  const metadata=await ensureDouyinMetadata(before);
-  // A missing sync control must remain blocked, but independent cover work can finish.
-  const settingsBlocked=!metadata.ok&&metadata.blocker?.code==='SELECTOR_DRIFT'&&metadata.actions?.settings?.ok===false;
-  if(!metadata.ok&&!settingsBlocked)return {...(await inspectDouyin()),actions:metadata.actions,blocker:metadata.blocker};
-  const actions = metadata.actions;
-
+  const actions = {};
   const receipts = {};
   if (douyinCustomCover) {
     const repaired = await repairDelayedDouyinCoverReceipt();
@@ -564,8 +604,11 @@ async function mutateDouyin() {
     }
   }
   actions.receiptCheckpoint = checkpointReceipts(receipts);
+  const metadata=await ensureDouyinMetadata(await inspectDouyin());
+  Object.assign(actions,metadata.actions);
+  if(!metadata.ok)return {...(await inspectDouyin()),actions,receipts,blocker:metadata.blocker};
   const after = await inspectDouyin();
-  return { ...after, actions, receipts, ...(settingsBlocked?{blocker:metadata.blocker}:{}) };
+  return { ...after, actions, receipts };
 }
 
 async function runPlatformPhase(){if(phase==='inspect'||phase==='verify')return await inspectDouyin();if(phase==='upload_start')return await startDouyinUpload();if(phase==='prefill')return await prefillDouyin();if(phase==='upload')return await uploadDouyin();if(phase==='mutate')return await mutateDouyin();return {...(await inspectDouyin()),blocker:typedBlocker('ACTION_FAILED',`unsupported Douyin phase: ${phase}`)}}

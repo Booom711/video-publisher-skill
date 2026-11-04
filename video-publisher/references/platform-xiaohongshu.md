@@ -15,11 +15,11 @@ no prose body unless explicitly requested
 
 Use the confirmed video file. Reuse an uploaded editor only when the filename or expected title identifies this package. A different active draft is a blocker; Xiaohongshu has no tested automatic quarantine flow.
 
-视频上传仍在进行时，只要 fresh inspection 同时证明标题输入框、正文话题编辑器和原生话题按钮可见，就可通过单宽 UI 队列提前填写标题和话题。原创声明、封面和最终验证仍必须等上传完成。`prefill` 不满足 video gate，之后必须继续正式 `upload` 等待。
+生产流程先等待视频上传完成，再上传并验证封面，最后填写标题、正文、话题和原创声明。保留的 `prefill` 阶段只用于兼容诊断，生产调度不再在上传中调用它。
 
 ## Topic Entities
 
-Clear the body editor completely, then add topics one at a time through the real suggestion panel. The sticky final-publish footer can cover the visually exposed toolbar near the viewport bottom, so a pointer click may land on the footer instead of `话题`. Invoke the exact native `button.contentBtn.topic-btn` control through its page handler to make the platform editor insert `#`, explicitly refocus the editor at its end, type only the compact topic query, and select the exact suggestion row. Do not inject `#话题` as one text operation; that can create a suggestion decoration without loading candidates on a cold page.
+Clear the body editor completely, then add topics one at a time through the real suggestion panel. Before invoking the exact native `button.contentBtn.topic-btn` handler, prove the plain body still exactly matches the requested description and place the real caret at the editor end. After the handler inserts `#`, prove the plain tail equals `description + #`; a marker inserted inside the final sentence is corruption and must fail the current rebuild. Then refocus at the end, type only the compact topic query, and select the exact suggestion row. Do not inject `#话题` as one text operation; that can create a suggestion decoration without loading candidates on a cold page.
 
 Under sustained browser load, the decoration may appear while the candidate panel remains empty. Verify the exact trailing query, poll the exact row for a finite extended window, and if it never appears clear the entire topic editor and retry the whole requested set. Use at most three whole-set attempts; never preserve a half-built set or accept plain text after an empty candidate response.
 

@@ -135,7 +135,7 @@ test("resuming one platform keeps unfinished siblings resumable", async () => {
   }
 });
 
-test("publisher prefills Douyin metadata before waiting for upload completion", async () => {
+test("publisher waits for Douyin upload completion before cover and metadata mutation", async () => {
   const root=await fs.promises.mkdtemp(path.join(os.tmpdir(),"video-publisher-v2-douyin-prefill-test-"));
   const log=path.join(root,"events.ndjson");
   const videoPath=path.join(root,"sample-video.mp4");
@@ -149,16 +149,15 @@ test("publisher prefills Douyin metadata before waiting for upload completion", 
     VIDEO_PUBLISHER_CONFIG:configPath,
     VIDEO_PUBLISHER_V2_RUNNER:path.join(DIR,"mock-runner.mjs"),
     VIDEO_PUBLISHER_V2_MOCK_LOG:log,
-    VIDEO_PUBLISHER_V2_MOCK_DELAYS:JSON.stringify({"douyin:upload_start":10,"douyin:prefill":20,"douyin:upload":120}),
+    VIDEO_PUBLISHER_V2_MOCK_DELAYS:JSON.stringify({"douyin:upload_start":10,"douyin:upload":120}),
   }});
   assert.equal(result.code,0,`${result.stderr}\n${result.stdout}`);
   const events=(await fs.promises.readFile(log,"utf8")).trim().split(/\n/).map(line=>JSON.parse(line));
-  assert.deepEqual(events.filter(item=>item.event==="start").map(item=>item.phase),["inspect","upload_start","prefill","upload","mutate","verify"]);
-  const prefillEnd=events.find(item=>item.phase==="prefill"&&item.event==="end").at;
+  assert.deepEqual(events.filter(item=>item.event==="start").map(item=>item.phase),["inspect","upload_start","upload","mutate","verify"]);
   const completionWaitStart=events.find(item=>item.phase==="upload"&&item.event==="start").at;
   const finalMutationStart=events.find(item=>item.phase==="mutate"&&item.event==="start").at;
   const completionWaitEnd=events.find(item=>item.phase==="upload"&&item.event==="end").at;
-  assert.ok(prefillEnd<=completionWaitStart,{prefillEnd,completionWaitStart});
+  assert.ok(completionWaitStart>=events.find(item=>item.phase==="upload_start"&&item.event==="end").at);
   assert.ok(finalMutationStart>=completionWaitEnd,{finalMutationStart,completionWaitEnd});
   assert.equal(JSON.parse(result.stdout).ready,true);
 });
@@ -216,7 +215,7 @@ test("publisher prefills YouTube details during upload and reaches verified priv
   assert.equal(JSON.parse(result.stdout).platforms.youtube.ready, true);
 });
 
-test("publisher uses upload-time prefill for Xiaohongshu, Bilibili, and WeChat Channels", async () => {
+test("publisher defers Xiaohongshu and Bilibili metadata but retains WeChat upload-time prefill", async () => {
   const root=await fs.promises.mkdtemp(path.join(os.tmpdir(),"video-publisher-v2-early-prefill-platforms-test-"));
   const log=path.join(root,"events.ndjson");
   const videoPath=path.join(root,"sample-video.mp4");
@@ -234,13 +233,15 @@ test("publisher uses upload-time prefill for Xiaohongshu, Bilibili, and WeChat C
   }});
   assert.equal(result.code,0,`${result.stderr}\n${result.stdout}`);
   const events=(await fs.promises.readFile(log,"utf8")).trim().split(/\n/).map(line=>JSON.parse(line));
-  for(const platform of ["xiaohongshu","bilibili","wechat_channels"]){
+  for(const platform of ["xiaohongshu","bilibili"]){
     const phases=events.filter(item=>item.platform===platform&&item.event==="start").map(item=>item.phase);
-    assert.deepEqual(phases,["inspect","upload_start","prefill","upload","mutate","verify"]);
-    const prefillEnd=events.find(item=>item.platform===platform&&item.phase==="prefill"&&item.event==="end").at;
-    const uploadStart=events.find(item=>item.platform===platform&&item.phase==="upload"&&item.event==="start").at;
-    assert.ok(prefillEnd<=uploadStart,{platform,prefillEnd,uploadStart});
+    assert.deepEqual(phases,["inspect","upload_start","upload","mutate","verify"]);
+    const uploadEnd=events.find(item=>item.platform===platform&&item.phase==="upload"&&item.event==="end").at;
+    const mutateStart=events.find(item=>item.platform===platform&&item.phase==="mutate"&&item.event==="start").at;
+    assert.ok(mutateStart>=uploadEnd,{platform,uploadEnd,mutateStart});
   }
+  const wechatPhases=events.filter(item=>item.platform==="wechat_channels"&&item.event==="start").map(item=>item.phase);
+  assert.deepEqual(wechatPhases,["inspect","upload_start","prefill","upload","mutate","verify"]);
 });
 
 test("publisher defers a retryable prefill failure until upload completion", async () => {
@@ -250,14 +251,14 @@ test("publisher defers a retryable prefill failure until upload completion", asy
   const packagePath=path.join(root,"package.json");
   const configPath=path.join(root,"config.json");
   await fs.promises.writeFile(videoPath,mp4WithDuration(30));
-  await fs.promises.writeFile(configPath,JSON.stringify({schemaVersion:2,onboarding:{completed:true},sourceDirectory:root,availablePlatforms:["bilibili"],defaultPlatforms:["bilibili"],declarations:{originalityPolicy:"all_videos_original"},execution:{checkConcurrency:1,uploadConcurrency:1}}));
-  await fs.promises.writeFile(packagePath,JSON.stringify({videoPath,title:"Deferred prefill",bilibiliDescription:"Deferred prefill",bilibiliTags:["Test"],cover:{uploadCustomCover:false}}));
-  const result=await run(process.execPath,[path.join(V2_DIR,"publisher.mjs"),packagePath,"prefill-defer","bilibili","--state-root",root],{env:{
+  await fs.promises.writeFile(configPath,JSON.stringify({schemaVersion:2,onboarding:{completed:true},sourceDirectory:root,availablePlatforms:["wechat_channels"],defaultPlatforms:["wechat_channels"],declarations:{originalityPolicy:"all_videos_original"},execution:{checkConcurrency:1,uploadConcurrency:1}}));
+  await fs.promises.writeFile(packagePath,JSON.stringify({videoPath,title:"Deferred prefill",wechatDescription:"Deferred prefill\n\n#Test",wechatTags:["Test"],cover:{uploadCustomCover:false}}));
+  const result=await run(process.execPath,[path.join(V2_DIR,"publisher.mjs"),packagePath,"prefill-defer","wechat_channels","--state-root",root],{env:{
     ...process.env,
     VIDEO_PUBLISHER_CONFIG:configPath,
     VIDEO_PUBLISHER_V2_RUNNER:path.join(DIR,"mock-runner.mjs"),
     VIDEO_PUBLISHER_V2_MOCK_LOG:log,
-    VIDEO_PUBLISHER_V2_MOCK_BLOCKERS:JSON.stringify({"bilibili:prefill":{code:"PLATFORM_REJECTED_METADATA",message:"tag not stable yet",retryable:true,requiresUser:false}}),
+    VIDEO_PUBLISHER_V2_MOCK_BLOCKERS:JSON.stringify({"wechat_channels:prefill":{code:"PLATFORM_REJECTED_METADATA",message:"metadata not stable yet",retryable:true,requiresUser:false}}),
   }});
   assert.equal(result.code,0,`${result.stderr}\n${result.stdout}`);
   assert.match(result.stderr,/prefill deferred until upload completion/);
@@ -392,7 +393,7 @@ test("publisher stops the serial UI queue when a mutator loses Ego", async () =>
   const mutationStarts=events.filter(item=>item.phase==="mutate"&&item.event==="start").map(item=>item.platform);
   assert.equal(mutationStarts.includes("douyin"),true,"the configured broken mutator must start");
   assert.equal(mutationStarts.some(platform=>["bilibili","wechat_channels"].includes(platform)),false,"platforms queued after the broken mutator must never start UI mutation");
-  assert.equal(events.some(item=>item.platform==="xiaohongshu"&&item.phase==="prefill"),true,"safe upload-time prefill may finish before the later shared-channel failure");
+  assert.equal(events.some(item=>item.platform==="xiaohongshu"&&item.phase==="prefill"),false,"Xiaohongshu must not mutate metadata while its video is uploading");
   assert.equal(events.filter(item=>item.phase==="verify"&&item.event==="start").length,4,"final read-only verification still records every platform");
 });
 

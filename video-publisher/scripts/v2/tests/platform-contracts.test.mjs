@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PLATFORM_DIR = path.join(DIR, "..", "platforms");
@@ -15,13 +16,19 @@ test("Xiaohongshu topics start through the native editor command", () => {
   const topicFlow = source.slice(start, end);
   const lifecycle = topicFlow.indexOf("activateXhsTopicLifecycle()");
   const nativeStart = topicFlow.indexOf("topicButton.click()");
-  const explicitFocus = topicFlow.indexOf("editor.focus()", nativeStart);
-  const bareQuery = topicFlow.indexOf("await cdp('Input.insertText', { text: queryTag })", explicitFocus);
+  const startedFlow = topicFlow.slice(topicFlow.lastIndexOf("const started", nativeStart), topicFlow.indexOf("if (!started.ok)", nativeStart));
+  const caretAtEnd = startedFlow.indexOf("range.collapse(false)");
+  const nativeStartInProbe = startedFlow.indexOf("topicButton.click()");
+  const explicitRefocus = startedFlow.indexOf("editor.focus()", nativeStartInProbe);
+  const bareQuery = topicFlow.indexOf("await cdp('Input.insertText', { text: queryTag })", nativeStart);
   assert.ok(lifecycle >= 0 && lifecycle < nativeStart, "the hidden post-crash page must be activated before topic input");
   assert.match(source, /Page\.setWebLifecycleState', \{ state: 'active' \}/);
   assert.ok(nativeStart >= 0, "the platform topic command must insert the leading hash");
-  assert.ok(explicitFocus > nativeStart, "the editor must be refocused after the native command");
-  assert.ok(bareQuery > explicitFocus, "only the bare topic query may be inserted after refocus");
+  assert.ok(caretAtEnd >= 0 && caretAtEnd < nativeStartInProbe, "the real caret must be fixed at the editor end before the native topic command");
+  assert.ok(explicitRefocus > nativeStartInProbe, "the editor must be refocused after the native command");
+  assert.ok(bareQuery > nativeStart, "only the bare topic query may be inserted after the native command");
+  assert.match(startedFlow, /description changed before topic entry/, "the exact description must remain intact before every topic");
+  assert.match(startedFlow, /actualTail===expectedTail/, "a hash inserted inside the description must fail closed");
   assert.doesNotMatch(topicFlow, /Input\.insertText', \{ text: `#\$\{queryTag\}` \}/);
   assert.match(topicFlow, /rebuildAttempt<=3/, "candidate failures must retry the whole exact topic set with a finite bound");
   assert.match(topicFlow, /attempt < 12/, "each native suggestion request must get a bounded high-load wait window");
@@ -37,36 +44,40 @@ test("Douyin preserves committed topic entities while retrying a failed tail que
   const add = source.slice(cleanupEnd, addEnd);
   assert.match(cleanup, /expected\.startsWith\(initial\)/, "cleanup must prove the visible tail belongs to the missing topic");
   assert.match(cleanup, /entitiesUnchanged/, "cleanup must verify existing topic entities were preserved");
-  assert.match(source, /value\.startsWith\(expectedDescription\)/, "the first topic query must be isolated from a shared description text node");
+  assert.match(source, /stripProvenDouyinDescriptionSuffix/, "the first topic query must be isolated from a shared description text node");
   assert.match(add, /attempt<=3/, "suggestion lookup must use a finite retry bound");
   assert.match(add, /removeDouyinTrailingTopicQuery\(queryTag,committedBefore\)/, "a failed lookup must remove only its own plain query");
   assert.match(add, /querySelectorAll\('\[class\*=\"mention-suggest-item-container\"\]'\)/, "current Douyin must click the real suggestion row before falling back to descendants");
   assert.match(add, /direct\.length\?direct:legacy/, "legacy suggestion descendants remain a bounded fallback");
 });
 
-test("Douyin prefill requires live editable-upload evidence and defers covers", () => {
+test("Douyin mutation prepares covers before metadata", () => {
   const source = fs.readFileSync(path.join(PLATFORM_DIR, "douyin.mjs"), "utf8");
-  const start = source.indexOf("async function prefillDouyin");
-  const end = source.indexOf("async function mutateDouyin", start);
-  assert.ok(start >= 0 && end > start, "Douyin prefill function must remain discoverable");
-  const prefill = source.slice(start, end);
-  assert.match(source, /stage:'editable_uploading'/, "upload start must expose an explicit editable-uploading stage");
-  assert.match(prefill, /early\.ready===true/, "prefill must require freshly proven editor readiness");
-  assert.match(prefill, /video\.evidence\?\.uploading===true/, "prefill must remain bound to an active upload when video is incomplete");
-  assert.match(prefill, /ensureDouyinMetadata\(before\)/, "prefill must use the same idempotent metadata repair as final mutation");
-  assert.doesNotMatch(prefill, /uploadDouyinCoverSlot|repairDelayedDouyinCoverReceipt/, "custom covers stay after upload completion");
+  const start = source.indexOf("async function mutateDouyin");
+  const end = source.indexOf("async function runPlatformPhase", start);
+  assert.ok(start >= 0 && end > start, "Douyin mutation function must remain discoverable");
+  const mutation = source.slice(start, end);
+  const cover = mutation.indexOf("repairDelayedDouyinCoverReceipt()");
+  const metadata = mutation.indexOf("ensureDouyinMetadata(await inspectDouyin())");
+  assert.match(mutation, /if \(!before\.gates\.video\.ok\)/, "metadata and covers require a completed video");
+  assert.ok(cover >= 0 && metadata > cover, "both cover slots must finish before title, description, topics, and settings");
 });
 
-test("Xiaohongshu prefill requires live title and topic controls and defers rights and cover", () => {
+test("Xiaohongshu mutation prepares the cover before title, description, topics, and rights", () => {
   const source = fs.readFileSync(path.join(PLATFORM_DIR, "xiaohongshu.mjs"), "utf8");
-  const start = source.indexOf("async function prefillXiaohongshu");
-  const end = source.indexOf("async function mutateXiaohongshu", start);
+  const start = source.indexOf("async function mutateXiaohongshu");
+  const end = source.indexOf("async function runPlatformPhase", start);
   assert.ok(start >= 0 && end > start);
-  const prefill = source.slice(start, end);
-  assert.match(source, /stage: 'editable_uploading'/);
-  assert.match(source, /controls: \{ title: visible\(titleInput\), topics:/);
-  assert.match(prefill, /ensureXiaohongshuEarlyMetadata\(before\)/);
-  assert.doesNotMatch(prefill, /ensureXhsOriginal|uploadXhsCover/);
+  const mutation = source.slice(start, end);
+  const cover = mutation.indexOf("await uploadXhsCover()");
+  const metadata = mutation.indexOf("ensureXiaohongshuEarlyMetadata(await inspectXiaohongshu())");
+  const rights = mutation.indexOf("ensureXhsOriginal()");
+  assert.match(mutation, /if \(!before\.gates\.video\.ok\)/);
+  assert.ok(cover >= 0 && metadata > cover && rights > metadata, "cover must precede all text fields and the original declaration");
+  assert.match(source, /const xhsDescription = pkg\.description/);
+  assert.match(source, /description: state\.descriptionMatches/);
+  assert.match(source, /Input\.insertText', \{ text: xhsDescription \}/);
+  assert.match(source, /!current\.gates\.description\.ok \|\| !current\.gates\.tags\.ok/);
 });
 
 test("Xiaohongshu cover repair resumes by reselecting the requested source asset", () => {
@@ -119,16 +130,17 @@ test("Xiaohongshu opens the hover-only cover editor through its native handler",
   assert.match(coverFlow, /document\.querySelector\('\.cover-plugin-preview \.cover-edit-entry'\)\|\|document\.querySelector\('#vp2-xhs-cover-opener'\)/, "the native fallback must prefer a fresh hover entry over a stale id");
 });
 
-test("Bilibili prefill is limited to live title and tag controls", () => {
+test("Bilibili mutation prepares both cover slots before metadata", () => {
   const source = fs.readFileSync(path.join(PLATFORM_DIR, "bilibili.mjs"), "utf8");
-  const start = source.indexOf("async function prefillBilibili");
-  const end = source.indexOf("async function mutateBilibili", start);
+  const start = source.indexOf("async function mutateBilibili");
+  const end = source.indexOf("async function quarantineBilibili", start);
   assert.ok(start >= 0 && end > start);
-  const prefill = source.slice(start, end);
-  assert.match(source, /stage:'editable_uploading'/);
-  assert.match(source, /controls:\{title:visible\(titleInput\),tags:visible\(tagInput\)\}/);
-  assert.match(prefill, /ensureBilibiliEarlyMetadata\(before\)/);
-  assert.doesNotMatch(prefill, /setBilibiliDescriptionV2|ensureBilibiliDeclarationV2|uploadBilibiliCoverV2/);
+  const mutation = source.slice(start, end);
+  const cover = mutation.indexOf("uploadBilibiliCoverV2()");
+  const title = mutation.indexOf("setNativeInputValue", cover);
+  const description = mutation.indexOf("setBilibiliDescriptionV2()", cover);
+  assert.match(mutation, /if\(!before\.gates\.video\.ok\)/);
+  assert.ok(cover >= 0 && title > cover && description > cover, "both cover slots must precede title and description repair");
 });
 
 test("WeChat Channels prefill uses a task-space-bound upload receipt and defers original and covers", () => {
@@ -194,18 +206,17 @@ test("Bilibili upload waits for a real input and performs one bounded route reco
   assert.match(source, /attempt<=20/, "a silent injection failure must stop quickly instead of consuming the full upload window");
 });
 
-test("Bilibili cover repair continues after a rejected tag and preserves the blocker", () => {
+test("Bilibili cover repair completes before a rejected tag and preserves the blocker", () => {
   const source = fs.readFileSync(path.join(PLATFORM_DIR, "bilibili.mjs"), "utf8");
   const start = source.indexOf("async function mutateBilibili");
   const end = source.indexOf("async function quarantineBilibili", start);
   assert.ok(start >= 0 && end > start, "Bilibili mutation function must remain discoverable");
   const mutation = source.slice(start, end);
-  const tagFailure = mutation.indexOf("mutationBlockers.push(typedBlocker('PLATFORM_REJECTED_METADATA'");
   const coverRepair = mutation.indexOf("actions.cover=await uploadBilibiliCoverV2()");
+  const tagFailure = mutation.indexOf("mutationBlockers.push(typedBlocker('PLATFORM_REJECTED_METADATA'");
   const finalReturn = mutation.indexOf("blocker:mutationBlockers[0]||null");
-  assert.ok(tagFailure >= 0 && coverRepair > tagFailure, "cover repair must run after recording a tag rejection");
-  assert.ok(finalReturn > coverRepair, "the original typed blocker must survive after independent cover repair");
-  assert.doesNotMatch(mutation.slice(tagFailure, coverRepair), /return /, "tag rejection must not return before cover repair");
+  assert.ok(coverRepair >= 0 && tagFailure > coverRepair, "cover repair must finish before tag mutation starts");
+  assert.ok(finalReturn > tagFailure, "the typed tag blocker must survive after cover completion");
 });
 
 test("Bilibili keeps homepage and personal-space cover verification independent", () => {
@@ -231,10 +242,36 @@ test("Bilibili keeps homepage and personal-space cover verification independent"
   assert.match(source, /if\(closed&&accepted\)/, "final confirmation requires both live slot proofs and a closed editor");
   assert.match(source, /不同步，手动编辑/, "the sync warning must be recovered through the manual-edit path");
   assert.doesNotMatch(source, /确认同步/, "the adapter must never merge the two cover slots");
+  assert.match(source, /label:'首页推荐封面'/, "the 4:3 slot must have a semantic fallback when Bilibili replaces its generated id");
+  assert.match(source, /label:'个人空间封面'/, "the 16:9 slot must have a semantic fallback when Bilibili replaces its generated id");
+  assert.match(source, /resolvedBy:target===direct\?'selector':target===idFallback\?'ratio-id':'label'/, "slot selection must resolve the live control immediately before clicking");
+  assert.match(source, /bilibili cover slot click failed/, "a disappearing slot must become a structured repair failure instead of crashing the job");
 
   assert.match(source, /item\.extra\?\.edited===cardUrl/, "the visible primary card URL must bind to one cover-list item");
   assert.match(source, /matches\.length===1\?matches\[0\]:null/, "ambiguous ownership must fail closed");
   assert.match(source, /personal-space':image\(item\?\.main\)/, "the 16:9 slot is checked against the main URL, not a PK cover");
+});
+
+test("Bilibili inserts the full multi-paragraph description through the active editor", () => {
+  const source = fs.readFileSync(path.join(PLATFORM_DIR, "bilibili.mjs"), "utf8");
+  const start = source.indexOf("async function setBilibiliDescriptionV2");
+  const end = source.indexOf("async function ensureBilibiliDeclarationV2", start);
+  assert.ok(start >= 0 && end > start, "Bilibili description repair must remain discoverable");
+  const repair = source.slice(start, end);
+  assert.match(repair, /cdp\('Input\.insertText',\{text:bilibiliDescription\}\)/, "newlines must be inserted as real text into Quill");
+  assert.doesNotMatch(repair, /execCommand\('insertText'/, "execCommand must not truncate a multi-paragraph description at its first line");
+  assert.match(repair, /replace\(\/\\s\+\/g,' '\)\.trim\(\)===String\(value\)\.replace/, "the persisted editor value must be verified after insertion");
+});
+
+test("Bilibili runtime cover-slot probe is valid JavaScript", () => {
+  const source = fs.readFileSync(path.join(PLATFORM_DIR, "bilibili.mjs"), "utf8");
+  const marker = "for(let i=0;i<12;i+=1){active=await js(String.raw`";
+  const start = source.indexOf(marker);
+  const end = source.indexOf("`);if(active)", start + marker.length);
+  assert.ok(start >= 0 && end > start, "the live cover-slot probe must remain discoverable");
+  const template = source.slice(start + marker.length, end);
+  const expression = Function("asset", `return String.raw\`${template}\`;`)({editor:"#editor_4_3",label:"首页推荐封面"});
+  assert.doesNotThrow(() => new vm.Script(expression), "the expression sent to Ego must compile before any real page work");
 });
 
 test("WeChat Channels refuses an unproven uploaded draft with an empty description", () => {

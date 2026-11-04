@@ -38,9 +38,9 @@ test('missing sync selector preserves its blocker while both exact cover assets 
  assert.equal(item.checkpoints.length,1);
 });
 
-test('unrelated metadata and ownership blockers still prevent cover mutation',async()=>{
- for(const code of ['FOREIGN_DRAFT','USER_CONTROL','INPUT_CHANNEL_BROKEN','ACTION_FAILED']){
+test('post-cover metadata blockers remain visible after both cover assets finish',async()=>{
+ for(const code of ['ACTION_FAILED','PLATFORM_REJECTED_METADATA','SELECTOR_DRIFT']){
   const blocker={code,message:'stop'};const item=fixture({ok:false,actions:{},blocker});
-  assert.equal((await item.run()).blocker,blocker);assert.equal(item.uploads.length,0);assert.equal(item.checkpoints.length,0);
+  assert.equal((await item.run()).blocker,blocker);assert.equal(item.uploads.length,2);assert.equal(item.checkpoints.length,1);
  }
 });

@@ -1,4 +1,5 @@
 const xhsTitle = pkg.platformTitle.xiaohongshu;
+const xhsDescription = pkg.description;
 const xhsTopics = pkg.xhsTopics;
 const xhsVideoName = videoPath.split(/[\\/]/).pop();
 const xhsCustomCover = pkg.cover?.uploadCustomCover === true;
@@ -48,7 +49,7 @@ async function readXhsAcceptedImage(url) {
 }
 
 async function inspectXiaohongshu() {
-  const state = await js(String.raw`((expectedName, expectedTitle, requestedTopics) => {
+  const state = await js(String.raw`((expectedName, expectedTitle, expectedDescription, requestedTopics) => {
     const compact = value => String(value || '').replace(/\s+/g, ' ').trim()
     const visible = el => { if (!el) return false; const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>4&&r.height>4&&s.display!=='none'&&s.visibility!=='hidden' }
     const text = compact(document.body.innerText || '')
@@ -65,6 +66,7 @@ async function inspectXiaohongshu() {
     const plainClone = editor?.cloneNode(true)
     plainClone?.querySelectorAll('a').forEach(el => el.remove())
     const plainText = compact(plainClone?.innerText || plainClone?.textContent || '')
+    const descriptionMatches = plainText === compact(expectedDescription)
     const topicCounts = Object.fromEntries(requestedTopics.map(tag => {
       const normalized = String(tag).replace(/\s+/g, '').toLowerCase()
       const count = anchorNames.filter(value => String(value).replace(/\s+/g, '').toLowerCase() === normalized).length
@@ -115,10 +117,10 @@ async function inspectXiaohongshu() {
       ready: Boolean(visible(titleInput) && visible(editor) && visible(topicButton)),
       uploading,
       uploaded,
-      controls: { title: visible(titleInput), topics: visible(editor) && visible(topicButton) },
+      controls: { title: visible(titleInput), description: visible(editor), topics: visible(editor) && visible(topicButton) },
     }
-    return { text: text.slice(0, 2600), title, editorText, selected, topicCounts, plainResidue, duplicate, originalEnabled, activeDialogs, coverBg, filenameVisible, uploaded, uploading, failed, loginRequired, earlyMutation }
-  })(${JSON.stringify(xhsVideoName)}, ${JSON.stringify(xhsTitle)}, ${JSON.stringify(xhsTopics)})`);
+    return { text: text.slice(0, 2600), title, editorText, plainText, descriptionMatches, selected, topicCounts, plainResidue, duplicate, originalEnabled, activeDialogs, coverBg, filenameVisible, uploaded, uploading, failed, loginRequired, earlyMutation }
+  })(${JSON.stringify(xhsVideoName)}, ${JSON.stringify(xhsTitle)}, ${JSON.stringify(xhsDescription)}, ${JSON.stringify(xhsTopics)})`);
   const buttons = await inspectFinalButtons(/^(发布|发布笔记)$/);
   const identityOk = !state.uploaded || state.filenameVisible || state.title === xhsTitle;
   const receipt = expectedReceipts.cover || null;
@@ -135,6 +137,9 @@ async function inspectXiaohongshu() {
         ? okGate({ filename: xhsVideoName, stable: true })
         : failedGate({ filename: xhsVideoName, uploaded: state.uploaded, uploading: state.uploading, failed: state.failed }),
       title: state.title === xhsTitle ? okGate({ expected: xhsTitle, actual: state.title }) : failedGate({ expected: xhsTitle, actual: state.title }),
+      description: state.descriptionMatches
+        ? okGate({ expected: xhsDescription, actual: state.plainText })
+        : failedGate({ expected: xhsDescription, actual: state.plainText }),
       tags: state.selected.length === xhsTopics.length && !state.plainResidue.length && !state.duplicate.length
         ? okGate({ requested: xhsTopics, selected: state.selected, topicCounts: state.topicCounts })
         : failedGate({ requested: xhsTopics, selected: state.selected, plainResidue: state.plainResidue, duplicate: state.duplicate, topicCounts: state.topicCounts }),
@@ -267,23 +272,48 @@ async function rebuildXhsTopics() {
     if (!cleared.ok) return {...cleared,attempts};
     if(rebuildAttempt>1)await wait(1.5*rebuildAttempt);
     let failure=null;
+    if (xhsDescription) {
+      await cdp('Input.insertText', { text: xhsDescription });
+      await wait(0.6);
+      const written = await js(String.raw`((expected) => {
+        const compact=value=>String(value||'').replace(/\s+/g,' ').trim();
+        const editors=[...document.querySelectorAll('[contenteditable="true"],[contenteditable=""]')];
+        const editor=editors.find(el=>/话题|creator-editor/i.test(String(el.className||'')))||editors[0];
+        return {ok:Boolean(editor)&&compact(editor.innerText||editor.textContent||'')===compact(expected),actual:editor?.innerText||editor?.textContent||''};
+      })(${JSON.stringify(xhsDescription)})`);
+      if (!written.ok) failure={ok:false,reason:'xiaohongshu description did not persist exactly',evidence:written};
+      else if (xhsTopics.length) await cdp('Input.insertText', { text: '\n' });
+    }
     for (const tag of xhsTopics) {
+    if (failure) break;
     const queryTag = String(tag).replace(/\s+/g, '');
-    const started = await js(String.raw`(() => {
+    const started = await js(String.raw`((expectedDescription) => {
+      const compact=value=>String(value||'').replace(/\s+/g,' ').trim()
       const editors = [...document.querySelectorAll('[contenteditable="true"], [contenteditable=""]')]
       const editor = editors.find(el => /话题|creator-editor/i.test(String(el.className || ''))) || editors[0]
       if (!editor) return { ok: false, reason: 'xiaohongshu topic editor lost focus' }
       const topicButton = document.querySelector('button.contentBtn.topic-btn, #topicBtn')
       if (!topicButton) return { ok: false, reason: 'xiaohongshu native topic button missing' }
+      const plainBefore=editor.cloneNode(true)
+      plainBefore.querySelectorAll('a').forEach(el=>el.remove())
+      const beforeText=compact(plainBefore.innerText||plainBefore.textContent||'')
+      if(beforeText!==compact(expectedDescription))return {ok:false,reason:'xiaohongshu description changed before topic entry',expected:compact(expectedDescription),actual:beforeText}
+      editor.focus(); const selection = window.getSelection(); const range = document.createRange()
+      range.selectNodeContents(editor); range.collapse(false); selection.removeAllRanges(); selection.addRange(range)
+      if(document.activeElement!==editor)return {ok:false,reason:'xiaohongshu topic editor could not focus at end'}
       // The sticky publish footer can visually cover this toolbar near the viewport
       // bottom, so a real pointer click may land on the footer. Calling the native
       // Vue click handler still uses the site's own editor command to begin a topic.
       topicButton.click()
-      editor.focus(); const selection = window.getSelection(); const range = document.createRange()
-      range.selectNodeContents(editor); range.collapse(false); selection.removeAllRanges(); selection.addRange(range)
+      editor.focus(); const afterSelection = window.getSelection(); const afterRange = document.createRange()
+      afterRange.selectNodeContents(editor); afterRange.collapse(false); afterSelection.removeAllRanges(); afterSelection.addRange(afterRange)
       const text = String(editor.innerText || editor.textContent || '')
-      return { ok: document.activeElement === editor && text.trimEnd().endsWith('#'), active: document.activeElement === editor, text }
-    })()`);
+      const plainAfter=editor.cloneNode(true)
+      plainAfter.querySelectorAll('a').forEach(el=>el.remove())
+      const actualTail=compact(plainAfter.innerText||plainAfter.textContent||'')
+      const expectedTail=compact((expectedDescription?expectedDescription+'\n':'')+'#')
+      return { ok: document.activeElement === editor && actualTail===expectedTail, active: document.activeElement === editor, text,expectedTail,actualTail }
+    })(${JSON.stringify(xhsDescription)})`);
     if (!started.ok) { failure={ ...started, reason: started.reason || 'xiaohongshu native topic entry did not start',tag }; break; }
     await cdp('Input.insertText', { text: queryTag });
     await wait(1.2);
@@ -549,6 +579,8 @@ async function uploadXhsCover() {
   }
   selectedFile=await js(String.raw`(() => window.__VP2_XHS_SELECTED_FILE__||null)()`);
   if(selectedFile?.name!==path.basename(xhsCoverPath)||selectedFile?.size!==fs.statSync(xhsCoverPath).size)return {ok:false,reason:'xiaohongshu requested cover file was not proven',selectedFile};
+  const reactivatedCropPanel=await activateXhsCropPanel();
+  if(!reactivatedCropPanel.ok)return {ok:false,reason:'xiaohongshu crop panel could not be reactivated after upload',cropPanel:reactivatedCropPanel};
   const modernRatio=await js(String.raw`(() => {
     const modal=document.querySelector('.main-cover-editor-modal');
     const item=[...(modal?.querySelectorAll('button.ratio-option')||[])].find(e=>String(e.innerText||e.textContent||'').replace(/\s+/g,' ').trim()==='3:4');
@@ -636,13 +668,16 @@ async function ensureXiaohongshuEarlyMetadata(before) {
   if (!current.gates.title.ok) {
     return { ok: false, actions, current, blocker: typedBlocker('ACTION_FAILED', '小红书标题没有持久化', { evidence: current.gates.title.evidence }) };
   }
-  if (!current.gates.tags.ok) actions.tags = await rebuildXhsTopics();
-  if (actions.tags && !actions.tags.ok) {
+  if (!current.gates.description.ok || !current.gates.tags.ok) actions.content = await rebuildXhsTopics();
+  if (actions.content && !actions.content.ok) {
     current = await inspectXiaohongshu();
-    return { ok: false, actions, current, blocker: typedBlocker('ACTION_FAILED', actions.tags.reason, { evidence: actions.tags }) };
+    return { ok: false, actions, current, blocker: typedBlocker('ACTION_FAILED', actions.content.reason, { evidence: actions.content }) };
   }
   current = await inspectXiaohongshu();
-  return { ok: current.gates.title.ok && current.gates.tags.ok, actions, current };
+  if (!current.gates.description.ok || !current.gates.tags.ok) {
+    return { ok: false, actions, current, blocker: typedBlocker('ACTION_FAILED', '小红书正文或话题没有持久化', { evidence: { description: current.gates.description.evidence, tags: current.gates.tags.evidence } }) };
+  }
+  return { ok: current.gates.title.ok && current.gates.description.ok && current.gates.tags.ok, actions, current };
 }
 
 async function prefillXiaohongshu() {
@@ -665,19 +700,18 @@ async function prefillXiaohongshu() {
 async function mutateXiaohongshu() {
   const before = await inspectXiaohongshu();
   if (!before.gates.video.ok) return { ...before, blocker: typedBlocker('STATE_AMBIGUOUS', '小红书没有可修复的已上传视频') };
-  const metadata = await ensureXiaohongshuEarlyMetadata(before);
-  if (!metadata.ok) return { ...metadata.current, actions: metadata.actions, blocker: metadata.blocker };
-  const actions = { ...metadata.actions };
-  actions.original = await ensureXhsOriginal();
-  if (!actions.original.ok) return { ...(await inspectXiaohongshu()), blocker: typedBlocker(actions.original.blockerCode || 'ACTION_FAILED', actions.original.reason, { evidence: actions.original }) };
-  actions.cover = (await inspectXiaohongshu()).gates.cover.ok ? {ok:true,skipped:true} : await uploadXhsCover();
+  const actions = {};
+  actions.cover = before.gates.cover.ok ? {ok:true,skipped:true} : await uploadXhsCover();
   if (!actions.cover.ok) return { ...(await inspectXiaohongshu()), blocker: typedBlocker('PLATFORM_REJECTED_ASSET', actions.cover.reason, { retryable: true, evidence: actions.cover }) };
   const receipts = actions.cover.receipt ? { cover: actions.cover.receipt } : {};
   actions.receiptCheckpoint = checkpointReceipts(receipts);
-  const previousReceipts = expectedReceipts;
   expectedReceipts.cover = receipts.cover || expectedReceipts.cover;
+  const metadata = await ensureXiaohongshuEarlyMetadata(await inspectXiaohongshu());
+  Object.assign(actions, metadata.actions);
+  if (!metadata.ok) return { ...metadata.current, actions, receipts, blocker: metadata.blocker };
+  actions.original = await ensureXhsOriginal();
+  if (!actions.original.ok) return { ...(await inspectXiaohongshu()), actions, receipts, blocker: typedBlocker(actions.original.blockerCode || 'ACTION_FAILED', actions.original.reason, { evidence: actions.original }) };
   const after = await inspectXiaohongshu();
-  Object.assign(expectedReceipts, previousReceipts, receipts);
   return { ...after, actions, receipts };
 }
 

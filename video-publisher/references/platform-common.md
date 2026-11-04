@@ -27,14 +27,14 @@ Use `scripts/run-safe-platforms.sh`, which invokes `scripts/v2/publisher.mjs`.
 1. inspect all selected platforms in parallel
 2. resolve Bilibili restore/foreign-draft state through the serial UI queue
 3. start missing videos in parallel
-4. for a live-proven early-edit platform, enqueue metadata prefill through the serial UI queue while upload continues
-5. resume that platform's upload-completion wait
+4. for Xiaohongshu, Douyin, and Bilibili, do not mutate the page while upload continues; resume the upload-completion wait
+5. WeChat Channels and YouTube may retain their live-proven metadata prefill before resuming upload completion
 6. whenever one platform proves upload completion, enqueue its finalization immediately
-7. in the single UI queue, mutate that platform and then verify it independently
+7. in the single UI queue, Xiaohongshu, Douyin, and Bilibili prepare verified covers before title/description/topics/settings, then verify independently
 8. freeze typed-blocked platforms and continue every eligible sibling without a global upload barrier
 ```
 
-`upload_start` 只在上传仍活跃且对应平台的已验证控件可见时返回 `editable_uploading`。`prefill` 的范围为：抖音标题、描述、话题和同步设置；小红书标题和话题；B 站标题和标签；视频号描述和空短标题；YouTube 标题、无链接说明、可选标签、受众和上传中可编辑的高级设置。它不碰封面、原创声明、YouTube 可见性或最终步骤，也不满足 video gate。正式 `upload` 随后继续等待上传、处理和平台检查完成。所有预填、最终修复和对应验证仍通过单宽 UI 队列执行。
+`upload_start` 只在上传仍活跃且对应平台的已验证控件可见时返回 `editable_uploading`。生产调度不再对小红书、抖音和 B 站调用 `prefill`；这三平台先由正式 `upload` 等待上传、处理和平台检查完成，再按“封面 → 标题/简介/话题/设置”执行 mutation。视频号和 YouTube 的 `prefill` 仍只处理已实测安全字段，不碰封面、原创声明、可见性或最终步骤，也不满足 video gate。所有 mutation 和对应验证仍通过单宽 UI 队列执行。
 
 Ordinary typed blockers are platform-local: stop scheduling that platform after its blocker, retain its evidence, and continue successful siblings. `AUTH_REQUIRED` therefore freezes only the unauthenticated platform. `USER_CONTROL` remains global because task-space ownership requires all browser work to stop.
 

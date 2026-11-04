@@ -34,6 +34,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = path.join(os.homedir(), ".video-publisher", "v2-jobs");
 const RIGHTS_PLATFORMS = new Set(["xiaohongshu", "bilibili", "wechat_channels"]);
 const EARLY_PREFILL_PLATFORMS = new Set(["xiaohongshu", "douyin", "bilibili", "wechat_channels", "youtube"]);
+const POST_UPLOAD_METADATA_PLATFORMS = new Set(["xiaohongshu", "douyin", "bilibili"]);
 const validators = {
   xiaohongshu: validateXiaohongshuPackage,
   douyin: validateDouyinPackage,
@@ -518,9 +519,10 @@ async function main() {
     return task;
   }
 
-  // Start every missing upload first. Platforms with live-proven editable upload
-  // states may prefill metadata through the same one-wide UI queue, then resume
-  // their completion wait before final mutation and verification.
+  // Start every missing upload first. Xiaohongshu, Douyin, and Bilibili now finish
+  // the video upload before any cover or metadata mutation. Their adapters then
+  // apply covers before title/description/topics. Other platforms retain their
+  // proven upload-time prefill behavior.
   const uploadTargets = inputChannelBroken || userControl || args.operation === "replace-cover" ? [] : runnablePlatforms.filter(platform => state.platforms[platform].status === "needs_upload");
   console.error(`[video-publisher-v2] upload parallel=${args.uploadConcurrency}: ${uploadTargets.join(",") || "none"}`);
   const uploadPool = runPool(uploadTargets, args.uploadConcurrency, async platform => {
@@ -528,7 +530,8 @@ async function main() {
     if (EARLY_PREFILL_PLATFORMS.has(platform)) {
       const started=await invoke(platform, "upload_start");
       if (inputChannelBroken || userControl || terminalStatuses.has(state.platforms[platform].status)) return;
-      if (started.observation.actions?.upload?.stage === "editable_uploading") {
+      if (started.observation.actions?.upload?.stage === "editable_uploading"
+        && !POST_UPLOAD_METADATA_PLATFORMS.has(platform)) {
         let prefillResult = null;
         await ui.enqueue(async () => {
           if (inputChannelBroken || userControl || terminalStatuses.has(state.platforms[platform].status)) return;

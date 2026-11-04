@@ -22,11 +22,7 @@ After a browser restart, refocus the rich description editor and verify `documen
 
 ## 上传期间提前填写
 
-抖音允许在视频仍显示“上传过程中”时编辑发布信息。生产流程先用 `upload_start` 注入或恢复视频；只有 fresh inspection 同时证明上传仍活跃、标题输入、描述编辑器、`#添加话题` 控件和同步发布设置均可用，才返回 `editable_uploading`。
-
-随后由全局单宽 UI 队列执行 `prefill`，复用正式 mutation 的幂等标题、描述、话题和同步设置修复。`prefill` 不上传封面、不把 video gate 标为成功，也不执行 final verification。完成后正式 `upload` 必须继续等待“上传成功”稳定出现，之后才允许封面、剩余 mutation 和 verify。
-
-如果视频已开始但编辑控件未完整出现，返回 typed blocker，不猜测选择器；如果视频在排队期间已经完成，跳过提前路径并进入普通完成后流程。
+生产流程先用 `upload_start` 注入或恢复视频，但不在上传中填写任何字段。正式 `upload` 必须等待“上传成功”稳定出现，随后先完成双封面及回执，再填写标题、描述、话题和同步设置。保留的 `prefill` 阶段只用于兼容诊断，生产调度不再调用它。
 
 ## Topic Entities
 
@@ -49,6 +45,10 @@ The description may truthfully contain a requested topic word such as `HTML` or 
 ## Account Setting
 
 Select `不同时发布` for the simultaneous-publication setting unless the package explicitly authorizes cross-posting. Verify the selected radio state; do not infer it from a nearby Toutiao label.
+
+Some current creator pages no longer offer any Toutiao/simultaneous-publication setting. Accept `not_offered` only when a fresh inspection proves the full visible `发布设置` section, inventories every visible radio/checkbox label, finds no sync control or checked sync radio, and finds no visible `今日头条`, `同时发布`, `同步发布`, or `同时发布到` text. A missing selector by itself remains ambiguous and must not pass.
+
+The mutation step must reuse that fresh settings gate before locating controls. If inspection already proves `mode: not_offered`, return success without searching for the removed `不同时发布` radio. Only a failed or incomplete gate may proceed to selector lookup and typed drift.
 
 ## Custom Covers
 
@@ -75,7 +75,7 @@ correct draft identity
 video fully uploaded
 exact title and body
 the exact requested real topic entities, no residue or duplicates
-不同时发布 selected
+不同时发布 selected, or strict fresh evidence that this setting is not offered
 two distinct custom-cover receipts when enabled
 no blocking dialog
 visible enabled 发布 button
